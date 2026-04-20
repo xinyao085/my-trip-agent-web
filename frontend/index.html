@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trip Planner</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ── 顶部导航 ────────────────────────────────────────────── -->
+  <header>
+    <div class="logo">Trip<span>Planner</span></div>
+    <div class="header-status">
+      <div :class="['dot', statusState]"></div>
+      <span>{{ statusText }}</span>
+    </div>
+  </header>
+
+  <div class="layout">
+
+    <!-- ── 左栏：参数配置 ───────────────────────────────────── -->
+    <aside class="sidebar">
+
+      <div>
+        <div class="sidebar-section-title">目标城市</div>
+        <input type="text" v-model="city" placeholder="例如：苏州、成都、西安" />
+      </div>
+
+      <div>
+        <div class="sidebar-section-title">旅行天数</div>
+        <div class="number-control">
+          <button class="number-btn" @click="adjustDays(-1)">−</button>
+          <input type="number" v-model.number="days" min="1" max="14" />
+          <button class="number-btn" @click="adjustDays(1)">＋</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="sidebar-section-title">旅行偏好（可多选）</div>
+        <div class="tag-group">
+          <div
+            v-for="tag in availableTags"
+            :key="tag"
+            :class="['tag', { selected: selectedTags.includes(tag) }]"
+            @click="toggleTag(tag)"
+          >{{ tag }}</div>
+        </div>
+      </div>
+
+      <div>
+        <div class="sidebar-section-title">额外要求（可选）</div>
+        <textarea v-model="extra" placeholder="例如：预算有限、需要无障碍通道..."></textarea>
+      </div>
+
+      <button id="btn-plan" @click="startPlan" :disabled="isStreaming">开始规划</button>
+      <button v-if="showResetBtn" id="btn-reset" @click="resetSession">重置会话</button>
+      <div v-if="showSessionInfo" class="session-info">{{ sessionInfoText }}</div>
+
+    </aside>
+
+    <!-- ── 右栏：输出区域 ───────────────────────────────────── -->
+    <div class="main">
+
+      <div class="messages" ref="messagesEl">
+
+        <!-- 空状态提示 -->
+        <div v-if="messages.length === 0" class="empty-state">
+          <div class="big-icon">🗺️</div>
+          <h2>多 Agent 旅行规划</h2>
+          <p>填写左侧参数，点击"开始规划"。<br/>
+             4 个 AI Agent 协作：搜索景点、查询天气、推荐酒店，最后流式生成完整行程。<br/><br/>
+             计划生成后可继续对话修改。</p>
+        </div>
+
+        <template v-for="msg in messages" :key="msg.id">
+
+          <!-- Agent 加载卡片（Agent 1-3 运行期间） -->
+          <div v-if="msg.type === 'agent-loading'" class="msg ai">
+            <div class="msg-meta">
+              <div class="msg-avatar ai">AI</div>
+              <span>数据收集中</span>
+            </div>
+            <div class="agent-loading-card">
+              <div v-for="step in agentSteps" :key="step.key" class="agent-row">
+                <div :class="['spin-ring', step.state]"></div>
+                <div class="agent-row-info">
+                  <span class="agent-row-name">{{ step.label }}</span>
+                  <span :class="['agent-row-status', step.state === 'spinning' ? 'active' : step.state]">
+                    {{ step.state === 'spinning' ? '搜索中...' : step.state === 'done' ? '完成' : '等待中' }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 普通消息气泡 -->
+          <div v-else :class="['msg', msg.role]">
+            <div class="msg-meta">
+              <div :class="['msg-avatar', msg.role === 'user' ? 'user' : 'ai']">
+                {{ msg.role === 'user' ? '你' : 'AI' }}
+              </div>
+              <span>{{ msg.role === 'user' ? '你' : '旅行规划师' }}</span>
+            </div>
+            <div class="msg-body">
+              <div v-if="msg.isMarkdown" v-html="msg.renderedContent"></div>
+              <template v-else-if="msg.isStreaming">
+                <span style="white-space:pre-wrap">{{ msg.content }}</span><span class="cursor"></span>
+              </template>
+              <template v-else>{{ msg.content }}</template>
+            </div>
+          </div>
+
+        </template>
+      </div>
+
+      <!-- 多轮对话输入栏 -->
+      <div class="input-bar">
+        <textarea
+          v-model="chatInput"
+          :disabled="!chatEnabled"
+          placeholder="会话建立后，可在此继续修改计划..."
+          @keydown="handleChatKeydown"
+        ></textarea>
+        <button id="btn-send" @click="sendChat" :disabled="!chatEnabled || isStreaming">发送</button>
+      </div>
+      <div class="input-hint">{{ inputHint }}</div>
+
+    </div>
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
