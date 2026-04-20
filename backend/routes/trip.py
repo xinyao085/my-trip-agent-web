@@ -9,7 +9,9 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from ..config import MCP_CONFIG
 from ..schemas import PlanRequest, ChatRequest
 from ..session import sessions
-from ..agents import fetch_fresh_data, extract_new_params, stream_planner
+# from ..agents import fetch_fresh_data, extract_new_params, stream_planner
+# 改为 ReAct 版本
+from ..agents_react import fetch_fresh_data, extract_new_params, stream_planner
 
 router = APIRouter()
 
