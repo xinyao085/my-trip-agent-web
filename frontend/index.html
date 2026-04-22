@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Trip Planner</title>
-  <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/style.css?v=4" />
 </head>
 <body>
 
@@ -56,13 +56,46 @@
       </div>
 
       <button id="btn-plan" @click="startPlan" :disabled="isStreaming">开始规划</button>
-      <button v-if="showResetBtn" id="btn-reset" @click="resetSession">重置会话</button>
+      <button v-if="isStreaming" id="btn-stop-sidebar" @click="stopStreaming">⏹ 停止生成</button>
+      <button v-if="showResetBtn && !isStreaming" id="btn-reset" @click="resetSession">重置会话</button>
       <div v-if="showSessionInfo" class="session-info">{{ sessionInfoText }}</div>
+
+      <!-- ── 历史记录 ──────────────────────────────────────── -->
+      <div class="history-section">
+        <div class="history-header">
+          <span class="sidebar-section-title">历史记录</span>
+          <button class="history-refresh-btn" @click="loadHistory" title="刷新">↻</button>
+        </div>
+        <div class="history-list">
+          <div v-if="historyItems.length === 0" class="history-empty">暂无历史记录</div>
+          <div
+            v-for="item in historyItems"
+            :key="item.session_id"
+            :class="['history-item', { active: viewingSessionId === item.session_id }]"
+            @click="viewConversation(item.session_id)"
+          >
+            <div class="history-item-main">
+              <div class="history-item-title">📍 {{ item.city }} · {{ item.days }}天</div>
+              <div class="history-item-meta">{{ item.preferences || '通用' }} · {{ formatDate(item.updated_at) }}</div>
+            </div>
+            <button class="history-delete-btn" @click.stop="deleteHistoryItem(item.session_id)" title="删除">×</button>
+          </div>
+        </div>
+      </div>
 
     </aside>
 
     <!-- ── 右栏：输出区域 ───────────────────────────────────── -->
     <div class="main">
+
+      <!-- 历史查看模式横幅 -->
+      <div v-if="isHistoryView" class="history-view-banner">
+        <span>正在查看历史记录</span>
+        <div class="history-banner-actions">
+          <button @click="resumeSession(viewingSessionId)">继续修改此计划</button>
+          <button @click="exitHistoryView">退出历史</button>
+        </div>
+      </div>
 
       <div class="messages" ref="messagesEl">
 
@@ -124,7 +157,8 @@
           placeholder="会话建立后，可在此继续修改计划..."
           @keydown="handleChatKeydown"
         ></textarea>
-        <button id="btn-send" @click="sendChat" :disabled="!chatEnabled || isStreaming">发送</button>
+        <button v-if="isStreaming" id="btn-stop" @click="stopStreaming">停止</button>
+        <button v-else id="btn-send" @click="sendChat" :disabled="!chatEnabled">发送</button>
       </div>
       <div class="input-hint">{{ inputHint }}</div>
 
@@ -132,6 +166,6 @@
   </div>
 </div>
 
-<script type="module" src="js/app.js"></script>
+<script type="module" src="js/app.js?v=4"></script>
 </body>
 </html>

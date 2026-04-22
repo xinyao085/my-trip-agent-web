@@ -1,9 +1,8 @@
 import { createApp, ref, reactive, nextTick } from "https://cdn.jsdelivr.net/npm/vue@3/dist/vue.esm-browser.prod.js";
 import { marked }                              from "https://esm.sh/marked@14";
-import { planTrip, chatWithAgent }             from "./api.js";
-import { consumePlanStream, consumeChatStream } from "./stream.js";
+import { planTrip, chatWithAgent, fetchHistory, fetchConversation, deleteConversation } from "./api.js?v=4";
+import { consumePlanStream, consumeChatStream } from "./stream.js?v=4";
 
-// Agent 加载卡片的步骤配置（label 纯展示，延迟时间对应实际串行耗时估算）
 const AGENT_STEPS = [
   { key: "1", label: "Agent 1 · 景点搜索", delay: 0     },
   { key: "2", label: "Agent 2 · 天气查询", delay: 5000  },
@@ -28,6 +27,11 @@ createApp({
     const showSessionInfo = ref(false);
     const sessionInfoText = ref("");
 
+    // ── 历史记录状态 ─────────────────────────────────────────────
+    const historyItems      = ref([]);
+    const isHistoryView     = ref(false);
+    const viewingSessionId  = ref(null);
+
     // ── UI 状态 ──────────────────────────────────────────────────
     const statusState = ref("idle");
     const statusText  = ref("就绪");
@@ -38,8 +42,9 @@ createApp({
     const agentSteps = reactive(AGENT_STEPS.map(s => ({ ...s, state: "waiting" })));
     const messagesEl = ref(null);
 
-    let agentTimers = [];
-    let nextId      = 0;
+    let agentTimers      = [];
+    let nextId           = 0;
+    let abortController  = null;
 
     // ── 工具函数 ─────────────────────────────────────────────────
     function scrollBottom() {
@@ -67,6 +72,12 @@ createApp({
       return [selectedTags.value.join("、"), extra.value.trim()].filter(Boolean).join("，");
     }
 
+    function formatDate(dateStr) {
+      if (!dateStr) return "";
+      const d = new Date(dateStr.replace(" ", "T"));
+      return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    }
+
     // ── 消息管理 ─────────────────────────────────────────────────
     function addMessage(role, content = "", opts = {}) {
       const msg = {
@@ -82,8 +93,6 @@ createApp({
     function showAgentLoadingCard() {
       messages.value.push({ id: nextId++, type: "agent-loading" });
       agentSteps.forEach((s, i) => { s.state = i === 0 ? "spinning" : "waiting"; });
-
-      // 定时切换各步骤状态（估算值）
       agentTimers = AGENT_STEPS.slice(1).map(({ delay }, idx) =>
         setTimeout(() => {
           agentSteps[idx].state     = "done";
@@ -100,11 +109,6 @@ createApp({
       if (idx >= 0) messages.value.splice(idx, 1);
     }
 
-    /**
-     * 创建一个流式文字更新器，绑定到一条响应式 AI 消息。
-     * append(delta) — 追加增量文字
-     * finish(text)  — 流结束，渲染最终 Markdown
-     */
     function createStreamer() {
       let aiMsg       = null;
       let accumulated = "";
@@ -125,10 +129,16 @@ createApp({
       };
     }
 
+    // ── 中断流式响应 ─────────────────────────────────────────────
+    function stopStreaming() {
+      abortController?.abort();
+    }
+
     // ── POST /plan ───────────────────────────────────────────────
     async function startPlan() {
       if (!city.value.trim()) { alert("请输入目标城市"); return; }
       if (isStreaming.value) return;
+      if (isHistoryView.value) exitHistoryView();
 
       const prefs = getPrefsText();
       addMessage("user", `📍 ${city.value}  ·  ${days.value} 天${prefs ? "  ·  " + prefs : ""}`);
@@ -136,22 +146,40 @@ createApp({
       setStatus("loading", "Agent 工作中…");
       showAgentLoadingCard();
 
+      abortController = new AbortController();
       const streamer = createStreamer();
       try {
-        const res = await planTrip({ city: city.value, days: days.value, preferences: prefs });
-        const { sessionId: sid, finalText } = await consumePlanStream(res, {
+        const res = await planTrip(
+          { city: city.value, days: days.value, preferences: prefs },
+          abortController.signal,
+        );
+        const { sessionId: sid, finalText, aborted } = await consumePlanStream(res, {
           onFirstChunk: removeAgentLoadingCard,
           onDelta:      (delta) => streamer.append(delta),
+          signal:       abortController.signal,
         });
-        streamer.finish(finalText);
-        if (sid) { sessionId.value = sid; enableChat(city.value, days.value, prefs); }
-        setStatus("", "完成");
+        if (aborted) {
+          removeAgentLoadingCard();
+          streamer.finish((finalText || "") + "\n\n---\n*已中断*");
+          setStatus("idle", "已中断");
+        } else {
+          streamer.finish(finalText);
+          if (sid) { sessionId.value = sid; enableChat(city.value, days.value, prefs); }
+          setStatus("", "完成");
+          loadHistory();
+        }
       } catch (e) {
         removeAgentLoadingCard();
-        streamer.finish(`**请求失败：** ${e.message}`);
-        setStatus("idle", "出错");
+        if (e.name === "AbortError") {
+          streamer.finish("*已中断*");
+          setStatus("idle", "已中断");
+        } else {
+          streamer.finish(`**请求失败：** ${e.message}`);
+          setStatus("idle", "出错");
+        }
       } finally {
         isStreaming.value = false;
+        abortController   = null;
       }
     }
 
@@ -165,19 +193,103 @@ createApp({
       isStreaming.value = true;
       setStatus("loading", "思考中…");
 
+      abortController = new AbortController();
       const streamer = createStreamer();
       try {
-        const res = await chatWithAgent({ sessionId: sessionId.value, message });
-        const { finalText } = await consumeChatStream(res, {
+        const res = await chatWithAgent(
+          { sessionId: sessionId.value, message },
+          abortController.signal,
+        );
+        const { finalText, aborted } = await consumeChatStream(res, {
           onDelta: (delta) => streamer.append(delta),
+          signal:  abortController.signal,
         });
-        streamer.finish(finalText);
-        setStatus("", "完成");
+        if (aborted) {
+          streamer.finish((finalText || "") + "\n\n---\n*已中断*");
+          setStatus("idle", "已中断");
+        } else {
+          streamer.finish(finalText);
+          setStatus("", "完成");
+          loadHistory();
+        }
       } catch (e) {
-        streamer.finish(`**请求失败：** ${e.message}`);
-        setStatus("idle", "出错");
+        if (e.name === "AbortError") {
+          streamer.finish("*已中断*");
+          setStatus("idle", "已中断");
+        } else {
+          streamer.finish(`**请求失败：** ${e.message}`);
+          setStatus("idle", "出错");
+        }
       } finally {
         isStreaming.value = false;
+        abortController   = null;
+      }
+    }
+
+    // ── 历史记录 ─────────────────────────────────────────────────
+    async function loadHistory() {
+      try {
+        historyItems.value = await fetchHistory();
+      } catch (_) {
+        // 静默失败，不影响主流程
+      }
+    }
+
+    async function viewConversation(sid) {
+      if (isStreaming.value) return;
+      try {
+        const data = await fetchConversation(sid);
+        messages.value = data.map(m => ({
+          id: nextId++,
+          type: "message",
+          role: m.role,
+          content: m.content,
+          isStreaming: false,
+          isMarkdown: m.role === "ai",
+          renderedContent: m.role === "ai" ? marked.parse(m.content) : "",
+        }));
+        isHistoryView.value    = true;
+        viewingSessionId.value = sid;
+        chatEnabled.value      = false;
+        inputHint.value        = "正在查看历史记录 · 点击「退出历史」可返回";
+        scrollBottom();
+      } catch (e) {
+        alert("加载历史对话失败：" + e.message);
+      }
+    }
+
+    function resumeSession(sid) {
+      if (!sid || isStreaming.value) return;
+      sessionId.value    = sid;
+      isHistoryView.value    = false;
+      viewingSessionId.value = null;
+      chatEnabled.value  = true;
+      showResetBtn.value = true;
+      showSessionInfo.value = true;
+      sessionInfoText.value = "已恢复历史会话 · 可继续修改计划";
+      inputHint.value = "Enter 换行，点击发送 · 可要求修改计划、换城市或调整天数";
+    }
+
+    function exitHistoryView() {
+      isHistoryView.value    = false;
+      viewingSessionId.value = null;
+      messages.value         = [];
+      if (sessionId.value) {
+        chatEnabled.value = true;
+        inputHint.value   = "Enter 换行，点击发送 · 可要求修改计划、换城市或调整天数";
+      } else {
+        chatEnabled.value = false;
+        inputHint.value   = "建立会话后可继续对话 · Enter 换行，点击发送";
+      }
+    }
+
+    async function deleteHistoryItem(sid) {
+      try {
+        await deleteConversation(sid);
+        historyItems.value = historyItems.value.filter(i => i.session_id !== sid);
+        if (viewingSessionId.value === sid) exitHistoryView();
+      } catch (e) {
+        alert("删除失败：" + e.message);
       }
     }
 
@@ -198,6 +310,8 @@ createApp({
       chatInput.value   = "";
       showResetBtn.value    = false;
       showSessionInfo.value = false;
+      isHistoryView.value    = false;
+      viewingSessionId.value = null;
       inputHint.value = "建立会话后可继续对话 · Enter 换行，点击发送";
       setStatus("idle", "就绪");
     }
@@ -206,12 +320,17 @@ createApp({
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
     }
 
+    // 启动时加载历史
+    loadHistory();
+
     return {
       city, days, extra, chatInput, isStreaming, chatEnabled,
       showResetBtn, showSessionInfo, sessionInfoText,
       statusState, statusText, inputHint,
       availableTags, selectedTags, messages, agentSteps, messagesEl,
-      adjustDays, toggleTag, startPlan, sendChat, resetSession, handleChatKeydown,
+      historyItems, isHistoryView, viewingSessionId,
+      adjustDays, toggleTag, startPlan, sendChat, stopStreaming, resetSession, handleChatKeydown,
+      loadHistory, viewConversation, resumeSession, exitHistoryView, deleteHistoryItem, formatDate,
     };
   },
 }).mount("#app");

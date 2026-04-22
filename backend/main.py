@@ -1,19 +1,29 @@
 import os
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .routes.trip import router
+from .memory.redis import ping
 
 _FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await ping()
+    yield
+
 
 app = FastAPI(
     title="旅行规划 Multi-Agent API",
     description="基于 LangChain + MCP 的多 Agent 旅行规划服务",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
-# 开发阶段 allow_origins=["*"]；生产环境应改为具体域名
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,5 +34,4 @@ app.add_middleware(
 
 app.include_router(router)
 
-# 静态文件必须在 API 路由之后挂载，否则会拦截 /plan、/chat 等请求
 app.mount("/", StaticFiles(directory=_FRONTEND_DIR, html=True), name="frontend")
